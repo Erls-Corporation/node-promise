@@ -53,82 +53,95 @@ function defer(){
 
 var contextHandler = defer.contextHandler = {};
 
-function Deferred(canceller, rejectImmediately){
-  var result, finished, isError, waiting = [], handled;
+function Deferred (canceller) {
+  var result, finished, isError, handled, waiting = [];
   var promise = this.promise = new Promise();
   var currentContextHandler = contextHandler.getHandler && contextHandler.getHandler();
   
-  function notifyAll(value){
-    if(finished){
+  function notifyAll (value) {
+    if (finished) {
       throw new Error("This deferred has already been resolved");        
     }
     result = value;
     finished = true;
-    if(rejectImmediately && isError && waiting.length === 0){
-      throw result[0];
-    }
-    for(var i = 0; i < waiting.length; i++){
-      notify(waiting[i]);  
+    for (var i = 0; i < waiting.length; i++) {
+      notify(waiting[i]);
     }
   }
-  function notify(listener){
+  function notify (listener) {
     var func = (isError ? listener.error : listener.resolved);
-    if(func){
+    if (func) {
       handled = true;
-      enqueue(function(){
-        if(currentContextHandler){
-          currentContextHandler.resume();
+      if (currentContextHandler) {
+        currentContextHandler.resume();
+      }
+      try {
+        var newResult = func.apply(null, result);
+        if (newResult && typeof newResult.then === "function") {
+          newResult.then(listener.deferred.resolve, listener.deferred.reject);
+          return;
         }
-        try{
-          var newResult = func.apply(null, result);
-          if(newResult && typeof newResult.then === "function"){
-            newResult.then(listener.deferred.resolve, listener.deferred.reject);
-            return;
-          }
-          listener.deferred.resolve(newResult);
+        listener.deferred.resolve(newResult);
+      }
+      catch (e) {
+        listener.deferred.reject(e);
+      }
+      finally {
+        if (currentContextHandler) {
+          currentContextHandler.suspend();
         }
-        catch(e){
-          listener.deferred.reject(e);
-        }
-        finally{
-          if(currentContextHandler){
-            currentContextHandler.suspend();
-          }
-        }
-      });
+      }
     }
-    else{
-      listener.deferred[isError ? "reject" : "resolve"].apply(listener.deferred, result);
+    else {
+      if(isError){
+        if (listener.deferred.reject(result[0], true)) {
+		  handled = true;
+		}
+      }
+      else{
+        listener.deferred.resolve.apply(listener.deferred, result);
+      }
     }
   }
   // calling resolve will resolve the promise
-  this.resolve = this.callback = this.emitSuccess = function(){
+  this.resolve = this.callback = this.emitSuccess = function(value){
+    if (arguments.length > 1) {
+      debug("Promises should only be resolved with a single value");
+    }
     notifyAll(arguments);
   };
   
-  var reject = function(){
-    isError = true;
-    notifyAll(arguments);
-  };
   
   // calling error will indicate that the promise failed
-  this.reject = this.errback = this.emitError = rejectImmediately ? reject : function(error){
-    return enqueue(function(){
-      reject(error);
-    });
-  } 
+  var reject = this.reject = this.errback = this.emitError = function(error, dontThrow){
+    isError = true;
+    notifyAll(arguments);
+    if (!dontThrow) {
+	  setTimeout(function () {
+        if (!handled) {
+          throw error;
+        }
+      });
+	}
+	return handled;
+  };
   // call progress to provide updates on the progress on the completion of the promise
-  this.progress = function(update){
+  this.progress = function (update) {
     for(var i = 0; i < waiting.length; i++){
       var progress = waiting[i].progress;
       progress && progress(update);  
     }
-  }
+  };
   // provide the implementation of the promise
-  this.then = promise.then = function(resolvedCallback, errorCallback, progressCallback){
-    var returnDeferred = new Deferred(promise.cancel, true);
-    var listener = {resolved: resolvedCallback, error: errorCallback, progress: progressCallback, deferred: returnDeferred}; 
-    if(finished){
+  this.then = promise.then = function (resolvedCallback, errorCallback, progressCallback) {
+    var returnDeferred = new Deferred(promise.cancel);
+    var listener = {
+      resolved: resolvedCallback, 
+      error: errorCallback, 
+      progress: progressCallback, 
+      deferred: returnDeferred
+    }; 
+    if (finished) {
       notify(listener);
     }
     else{
@@ -136,11 +149,29 @@ function Deferred(canceller, rejectImmediately){
     }
     return returnDeferred.promise;
   };
+  var timeout;
+  this.timeout = function (ms) {
+    if (ms === undefined) {
+	  return timeout;
+	}
+	timeout = ms;
+    setTimeout(function () {
+	  if (!finished) {
+	    if (promise.cancel) {
+		  promise.cancel(new Error("timeout"));
+		}
+		else {
+	      reject(new Error("timeout"));
+		}
+      }
+	}, ms);
+	return promise;
+  };
   
-  if(canceller){
-    this.cancel = promise.cancel = function(){
+  if (canceller) {
+    this.cancel = promise.cancel = function () {
       var error = canceller();
-      if(!(error instanceof Error)){
+      if (!(error instanceof Error)) {
         error = new Error(error);
       }
       reject(error);
