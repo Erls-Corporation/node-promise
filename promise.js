@@ -1,3 +1,5 @@
+var defer = process.Promise;
+
 /**
 * Convenience functions for promises, primarily based on the ref_send API
 */
