@@ -1,8 +1,8 @@
 /**
-* Convenience functions for promises
+* Convenience functions for promises, much of this is taken from Tyler Close's ref_send 
+* and Kris Kowal's work on promises.
+* Dual licensed under BSD and AFL
 */
-
-var defer = process.Promise;
  
 /**
  * Registers an observer on a promise.
@@ -14,23 +14,65 @@ var defer = process.Promise;
  */
 exports.whenPromise = function(value, resolvedCallback, rejectCallback, progressCallback){
   try{
-    if(value && typeof value.then === "function"){
-      value = value.then(resolvedCallback, rejectCallback, progressCallback);
+    var returnValue;
+    if (value && (typeof value.addCallback === "function" || typeof value.then === "function")){
+      if (typeof value.addCallback === "function"){
+        var promise = new process.Promise();
+        value.addCallback(function (value) {
+          try {
+            if (resolvedCallback) {
+              exports.when(resolvedCallback(value), function(value) {
+                promise.emitSuccess(value);
+              },
+              function (error) {
+                promise.emitError(error);
+              });
+            }
+            promise.emitSuccess(value);
+          }
+          catch (error) {
+            promise.emitError(error);
+          }
+        });
+        value.addErrback(function (error) {
+          try {
+            if (rejectCallback) {
+              exports.when(rejectCallback(error), function(value) {
+                promise.emitSuccess(value);
+              },
+              function (error) {
+                promise.emitError(error);
+              });
+            }
+            else {
+              promise.emitError(error);
+            }
+            
+          }
+          catch (error) {
+            promise.emitError(error);
+          }
+        });
+        return promise;
+      }
+      else {
+        value = value.then(resolvedCallback, rejectCallback, progressCallback);
+      }
     }
     else{
       value = resolvedCallback(value);
     }
-    if(value && typeof value.then === "function"){
+    if(value && ((value instanceof process.Promise) || (typeof value.then === "funtion"))){
       return value;
     }
-    var deferred = new process.Promise();
-    deferred.resolve(value);
-    return deferred.promise;
+    var promise = new process.Promise();
+    promise.emitSuccess(value);
+    return promise;
   }
   catch(e){
-    var deferred = new process.Promise();
-    deferred.reject(e);
-    return deferred.promise;
+    var promise = new process.Promise();
+    promise.emitError(e);
+    return promise;
   }
 };
 /**
@@ -43,7 +85,7 @@ exports.whenPromise = function(value, resolvedCallback, rejectCallback, progress
  * is a non-promise value
  */
 exports.when = function(value, resolvedCallback, rejectCallback, progressCallback){
-  if(value && typeof value.then === "function"){
+  if(value && (typeof value.addCallback === "function" || typeof value.then === "function")){
     return exports.whenPromise(value, resolvedCallback, rejectCallback, progressCallback);
   }
   return resolvedCallback(value);
@@ -59,30 +101,64 @@ exports.when = function(value, resolvedCallback, rejectCallback, progressCallbac
  * @param target   promise or value to wait for.
  * @return the value of the promise;
  */
-exports.wait = process.Promise.wait;
+exports.wait = function(target){
+  if (typeof target.wait === "function") {
+    return target.wait();
+  }
+  return target;
+};
 
 /**
  * Takes an array of promises and returns a promise that that is fulfilled once all
  * the promises in the array are fulfilled
- * @param group  The array of promises
+ * @param array  The array of promises
  * @return the promise that is fulfilled when all the array is fulfilled
  */
-exports.group = function(group){
-  var deferred = defer();
-  if(!(group instanceof Array)){
-    group = Array.prototype.slice.call(arguments);
+exports.all = function(array){
+  var resultsPromise = new process.Promise();
+  if(!(array instanceof Array)){
+    array = Array.prototype.slice.call(arguments);
   }
-  var fulfilled, length = group.length;
+  var fulfilled = 0, length = array.length;
   var results = [];
-  group.forEach(function(promise, index){
-    exports.when(promise, function(value){
+  array.forEach(function(promise, index){
+    exports.when(promise, each, each);
+    function each(value){
       results[index] = value;
       fulfilled++;
       if(fulfilled === length){
-        deferred.resolve(results);
+        resultsPromise.emitSuccess(results);
       }
-    },
-    deferred.reject);
+    }
   });
-  return deferred.promise;
+  return resultsPromise;
+};
+
+/**
+ * Takes an array of promises and returns the first promise that that is fulfilled
+ * the promises in the array are fulfilled
+ * @param array  The array of promises
+ * @return the promise that is fulfilled when all the array is fulfilled
+ */
+exports.first = function(array){
+  var resultsPromise = new process.Promise();
+  if(!(array instanceof Array)){
+    array = Array.prototype.slice.call(arguments);
+  }
+  var fulfilled;
+  array.forEach(function(promise, index){
+    exports.when(promise, function(value){
+      if (!fulfilled) {
+        fulfilled = true;
+        resultsPromise.emitSuccess(value);
+      }  
+    },
+    function(error){
+      if (!fulfilled) {
+        fulfilled = true;
+        resultsPromise.emitError(error);
+      }  
+    });
+  });
+  return resultsPromise;
 };
